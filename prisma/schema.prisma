@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum CompanyConfidence {
+  low
+  medium
+  high
+}
+
+model IpIntelligence {
+  id                String            @id @default(cuid())
+  ipHash            String            @unique
+  ipAddress         String?
+  country           String?
+  countryCode       String?
+  region            String?
+  regionCode        String?
+  city              String?
+  postalCode        String?
+  latitude          Float?
+  longitude         Float?
+  accuracyRadius    Int?
+  timezone          String?
+
+  asn               String?
+  asName            String?
+  asDomain          String?
+  asnNetwork        String?
+  reverseDns        String?
+  rdapName          String?
+  rdapEntity        String?
+
+  networkName       String?
+  companyGuess      String?
+  companyDomain     String?
+  companyConfidence CompanyConfidence @default(low)
+  companyReason     String?
+
+  geoSource         String?
+  asnSource         String?
+  lookupSource      String?
+
+  lastLookupAt      DateTime
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  events            VisitorEvent[]
+
+  @@index([countryCode])
+  @@index([asn])
+  @@index([companyGuess])
+  @@index([companyConfidence])
+}
+
+model VisitorEvent {
+  id                String            @id @default(cuid())
+  occurredAt        DateTime          @default(now())
+
+  eventName         String
+  clientId          String?
+  pageUrl           String?
+  pageHostname      String?
+  pagePath          String?
+  pageTitle         String?
+  userAgent         String?
+  referrer          String?
+
+  utmSource         String?
+  utmMedium         String?
+  utmCampaign       String?
+
+  ipHash            String
+  ipAddress         String?
+
+  country           String?
+  countryCode       String?
+  region            String?
+  city              String?
+  asn               String?
+  networkName       String?
+  companyGuess      String?
+  companyConfidence CompanyConfidence @default(low)
+
+  ipIntelligenceId  String?
+  ipIntelligence    IpIntelligence?   @relation(fields: [ipIntelligenceId], references: [id], onDelete: SetNull)
+
+  rawPayload         Json?
+
+  createdAt         DateTime          @default(now())
+
+  @@index([occurredAt])
+  @@index([eventName])
+  @@index([countryCode])
+  @@index([companyGuess])
+  @@index([companyConfidence])
+  @@index([pageHostname])
+  @@index([pagePath])
+  @@index([utmSource])
+}
