@@ -4,6 +4,7 @@ import type { PrismaClient } from '@prisma/client';
 import type { AppConfig } from '../../config/env';
 import { requireApiKey } from '../../shared/auth';
 import { parseDateRange } from '../../shared/date-range';
+import { normalizePageData, type PageGroupRuleLike } from '../page-intelligence/page-normalizer.service';
 
 type Options = {
   config: AppConfig;
@@ -15,6 +16,17 @@ const DateRangeQuerySchema = Type.Object({
   to: Type.Optional(Type.String()),
 });
 
+const DEFAULT_PAGE_GROUP_RULES = [
+  { name: 'Services section', matchType: 'path_prefix', pattern: '/services', groupName: 'Services', priority: 10 },
+  { name: 'Products section', matchType: 'path_prefix', pattern: '/products', groupName: 'Products', priority: 20 },
+  { name: 'Solutions section', matchType: 'path_prefix', pattern: '/solutions', groupName: 'Solutions', priority: 30 },
+  { name: 'Blog section', matchType: 'path_prefix', pattern: '/blog', groupName: 'Blog', priority: 40 },
+  { name: 'Case studies section', matchType: 'path_prefix', pattern: '/case-studies', groupName: 'Case Studies', priority: 50 },
+  { name: 'Contact section', matchType: 'path_prefix', pattern: '/contact', groupName: 'Contact', priority: 60 },
+  { name: 'Careers section', matchType: 'path_prefix', pattern: '/careers', groupName: 'Careers', priority: 70 },
+  { name: 'About section', matchType: 'path_prefix', pattern: '/about', groupName: 'About', priority: 80 },
+];
+
 function commonWhere(from: Date, to: Date) {
   return {
     occurredAt: {
@@ -22,6 +34,54 @@ function commonWhere(from: Date, to: Date) {
       lte: to,
     },
   };
+}
+
+function parsePositiveInt(value: unknown, fallback: number, maximum: number): number {
+  const parsed = Number(value || fallback);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.max(1, Math.min(Math.trunc(parsed), maximum));
+}
+
+function parseBoolean(value: unknown): boolean {
+  return value === true || value === 'true' || value === '1';
+}
+
+async function loadPageGroupRules(prisma: PrismaClient): Promise<PageGroupRuleLike[]> {
+  try {
+    return await prisma.pageGroupRule.findMany({
+      where: {
+        isActive: true,
+      },
+      orderBy: {
+        priority: 'asc',
+      },
+      select: {
+        name: true,
+        matchType: true,
+        pattern: true,
+        groupName: true,
+        priority: true,
+      },
+    });
+  } catch {
+    return [];
+  }
+}
+
+async function seedDefaultPageGroupRules(prisma: PrismaClient): Promise<void> {
+  const existingCount = await prisma.pageGroupRule.count();
+
+  if (existingCount > 0) {
+    return;
+  }
+
+  await prisma.pageGroupRule.createMany({
+    data: DEFAULT_PAGE_GROUP_RULES.map((rule) => ({
+      ...rule,
+      isActive: true,
+    })),
+    skipDuplicates: true,
+  });
 }
 
 export async function registerDashboardRoutes(app: FastifyInstance, options: Options): Promise<void> {
@@ -169,7 +229,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
     const limit = Number(query.limit || 25);
 
     const rows = await options.prisma.visitorEvent.groupBy({
-      by: ['pageHostname', 'pagePath', 'pageTitle'],
+      by: ['normalizedPageHostname', 'normalizedPagePath', 'pageHostname', 'pagePath', 'pageTitle'],
       where: commonWhere(from, to),
       _count: {
         _all: true,
@@ -183,10 +243,189 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
     });
 
     return rows.map((row) => ({
-      page_hostname: row.pageHostname,
-      page_path: row.pagePath,
+      page_hostname: row.normalizedPageHostname || row.pageHostname,
+      page_path: row.normalizedPagePath || row.pagePath,
       page_title: row.pageTitle,
       visits: row._count._all,
+    }));
+  });
+
+  app.get('/api/v1/dashboard/visited-pages-grouped', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get visited pages grouped by business section',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: Type.Intersect([
+        DateRangeQuerySchema,
+        Type.Object({
+          excludeUnknown: Type.Optional(Type.Union([Type.Boolean(), Type.String()])),
+          limitGroups: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+          limitPagesPerGroup: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
+        }),
+      ]),
+    },
+  }, async (request) => {
+    const query = request.query as any;
+    const { from, to } = parseDateRange(query);
+    const excludeUnknown = parseBoolean(query.excludeUnknown);
+    const limitGroups = parsePositiveInt(query.limitGroups, 25, 100);
+    const limitPagesPerGroup = parsePositiveInt(query.limitPagesPerGroup, 20, 100);
+    const rules = await loadPageGroupRules(options.prisma);
+
+    const rows = await options.prisma.visitorEvent.findMany({
+      where: commonWhere(from, to),
+      select: {
+        occurredAt: true,
+        pageUrl: true,
+        pageHostname: true,
+        pagePath: true,
+        pageTitle: true,
+        referrer: true,
+        normalizedPageUrl: true,
+        normalizedPageHostname: true,
+        normalizedPagePath: true,
+        pageGroup: true,
+        pageGroupSource: true,
+        pageSlug: true,
+        companyGuess: true,
+        companyConfidence: true,
+      },
+    });
+
+    type PageAggregate = {
+      page_title: string | null;
+      page_path: string;
+      page_url: string | null;
+      visits: number;
+      companyGuesses: Set<string>;
+      high_confidence_visits: number;
+      last_visited_at: Date;
+    };
+    type GroupAggregate = {
+      group_name: string;
+      visits: number;
+      companyGuesses: Set<string>;
+      high_confidence_visits: number;
+      last_visited_at: Date;
+      pages: Map<string, PageAggregate>;
+    };
+
+    const groups = new Map<string, GroupAggregate>();
+
+    rows.forEach((row) => {
+      const normalized = row.normalizedPagePath && row.pageGroup
+        ? {
+            normalizedPageUrl: row.normalizedPageUrl,
+            normalizedPageHostname: row.normalizedPageHostname,
+            normalizedPagePath: row.normalizedPagePath,
+            pageGroup: row.pageGroup,
+            pageGroupSource: row.pageGroupSource || 'stored',
+            pageSlug: row.pageSlug,
+            pageTitle: row.pageTitle,
+          }
+        : normalizePageData({
+            pageUrl: row.pageUrl,
+            pageHostname: row.pageHostname,
+            pagePath: row.pagePath,
+            pageTitle: row.pageTitle,
+            referrer: row.referrer,
+          }, rules);
+
+      const groupName = normalized.pageGroup || 'Unknown';
+
+      if (excludeUnknown && groupName === 'Unknown') {
+        return;
+      }
+
+      const pagePath = normalized.normalizedPagePath || row.pagePath || 'Unknown';
+      const pageUrl = normalized.normalizedPageUrl || row.pageUrl;
+      const pageKey = normalized.pageSlug || pagePath || pageUrl || row.pageTitle || 'unknown';
+
+      if (!groups.has(groupName)) {
+        groups.set(groupName, {
+          group_name: groupName,
+          visits: 0,
+          companyGuesses: new Set<string>(),
+          high_confidence_visits: 0,
+          last_visited_at: row.occurredAt,
+          pages: new Map<string, PageAggregate>(),
+        });
+      }
+
+      const group = groups.get(groupName)!;
+      group.visits += 1;
+      if (row.companyGuess) group.companyGuesses.add(row.companyGuess);
+      if (row.companyConfidence === 'high') group.high_confidence_visits += 1;
+      if (row.occurredAt > group.last_visited_at) group.last_visited_at = row.occurredAt;
+
+      if (!group.pages.has(pageKey)) {
+        group.pages.set(pageKey, {
+          page_title: normalized.pageTitle || row.pageTitle,
+          page_path: pagePath,
+          page_url: pageUrl,
+          visits: 0,
+          companyGuesses: new Set<string>(),
+          high_confidence_visits: 0,
+          last_visited_at: row.occurredAt,
+        });
+      }
+
+      const page = group.pages.get(pageKey)!;
+      page.visits += 1;
+      if (row.companyGuess) page.companyGuesses.add(row.companyGuess);
+      if (row.companyConfidence === 'high') page.high_confidence_visits += 1;
+      if (row.occurredAt > page.last_visited_at) page.last_visited_at = row.occurredAt;
+    });
+
+    return Array.from(groups.values())
+      .sort((left, right) => right.visits - left.visits)
+      .slice(0, limitGroups)
+      .map((group) => ({
+        group_name: group.group_name,
+        visits: group.visits,
+        unique_company_guesses: group.companyGuesses.size,
+        high_confidence_visits: group.high_confidence_visits,
+        last_visited_at: group.last_visited_at,
+        pages: Array.from(group.pages.values())
+          .sort((left, right) => right.visits - left.visits)
+          .slice(0, limitPagesPerGroup)
+          .map((page) => ({
+            page_title: page.page_title,
+            page_path: page.page_path,
+            page_url: page.page_url,
+            visits: page.visits,
+            unique_company_guesses: page.companyGuesses.size,
+            high_confidence_visits: page.high_confidence_visits,
+            last_visited_at: page.last_visited_at,
+          })),
+      }));
+  });
+
+  app.get('/api/v1/dashboard/page-group-rules', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get page grouping rules',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+    },
+  }, async () => {
+    await seedDefaultPageGroupRules(options.prisma);
+    const rows = await options.prisma.pageGroupRule.findMany({
+      orderBy: [
+        { isActive: 'desc' },
+        { priority: 'asc' },
+      ],
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      match_type: row.matchType,
+      pattern: row.pattern,
+      group_name: row.groupName,
+      priority: row.priority,
+      is_active: row.isActive,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
     }));
   });
 

@@ -27,6 +27,7 @@ src/
   modules/
     ingest/
     dashboard/
+    page-intelligence/
     ip-intelligence/
   shared/
 prisma/
@@ -95,6 +96,48 @@ Sample body:
 }
 ```
 
+Recommended Server GTM payload:
+
+```json
+{
+  "ip_address": "{{Request Header - X-Forwarded-For}}",
+  "page_url": "{{Event Data - page_location}}",
+  "page_hostname": "{{Event Data - page_hostname}}",
+  "page_path": "{{Event Data - page_path}}",
+  "page_title": "{{Event Data - page_title}}",
+  "user_agent": "{{Event Data - user_agent}}",
+  "event_name": "{{Event Data - event_name}}",
+  "referrer": "{{Event Data - page_referrer}}",
+  "client_id": "{{Event Data - client_id}}",
+  "utm_source": "{{Event Data - utm_source}}",
+  "utm_medium": "{{Event Data - utm_medium}}",
+  "utm_campaign": "{{Event Data - utm_campaign}}"
+}
+```
+
+Page normalization uses `page_url` first, then `page_path`, then `referrer` as a fallback. If only the referrer is available, the API still derives a normalized page path and business section where possible.
+
+Fallback sample:
+
+```json
+{
+  "ip_address": "103.21.166.142:50516",
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/148.0.0.0 Safari/537.36",
+  "event_name": "page_view",
+  "referrer": "https://covalentworld.com/services/business-strategy-assignment/",
+  "page_title": "IFS Outlook Integration For Work Orders & Scheduling | TaskSync",
+  "page_path": ""
+}
+```
+
+Expected normalized fields:
+
+```text
+normalizedPagePath = /services/business-strategy-assignment/
+pageGroup = Services
+pageSlug = services-business-strategy-assignment
+```
+
 ## Dashboard APIs
 
 Use:
@@ -109,6 +152,8 @@ Endpoints:
 GET /api/v1/dashboard/summary?from=2026-05-01&to=2026-05-27
 GET /api/v1/dashboard/top-companies?from=2026-05-01&to=2026-05-27
 GET /api/v1/dashboard/top-pages?from=2026-05-01&to=2026-05-27
+GET /api/v1/dashboard/visited-pages-grouped?from=2026-05-01&to=2026-05-27&limitGroups=25&limitPagesPerGroup=20
+GET /api/v1/dashboard/page-group-rules
 GET /api/v1/dashboard/recent-visits?limit=50
 GET /api/v1/dashboard/ip-intelligence?limit=100
 ```

@@ -3,6 +3,7 @@ import type { AppConfig } from '../../config/env';
 import { createIpHash } from '../ip-intelligence/ip-hash';
 import { extractPublicIp } from '../ip-intelligence/ip-normalizer';
 import type { IpIntelligenceService } from '../ip-intelligence/ip-intelligence.service';
+import { normalizePageData, type PageGroupRuleLike } from '../page-intelligence/page-normalizer.service';
 import type { IngestVisitorEventBody } from './ingest.schema';
 
 type Dependencies = {
@@ -50,6 +51,14 @@ export class IngestService {
 
     const ipHash = createIpHash(ip, this.deps.config.ipHashSecret);
     const intelligence = await this.deps.ipIntelligenceService.getOrCreate(ip);
+    const pageGroupRules = await this.loadPageGroupRules();
+    const normalizedPage = normalizePageData({
+      pageUrl: body.page_url,
+      pageHostname: body.page_hostname,
+      pagePath: body.page_path,
+      pageTitle: body.page_title,
+      referrer: body.referrer,
+    }, pageGroupRules);
 
     const event = await this.deps.prisma.visitorEvent.create({
       data: {
@@ -60,6 +69,12 @@ export class IngestService {
         pageHostname: valueOrNull(body.page_hostname),
         pagePath: valueOrNull(body.page_path),
         pageTitle: valueOrNull(body.page_title),
+        normalizedPageUrl: normalizedPage.normalizedPageUrl,
+        normalizedPageHostname: normalizedPage.normalizedPageHostname,
+        normalizedPagePath: normalizedPage.normalizedPagePath,
+        pageGroup: normalizedPage.pageGroup,
+        pageGroupSource: normalizedPage.pageGroupSource,
+        pageSlug: normalizedPage.pageSlug,
 
         userAgent: valueOrNull(body.user_agent),
         referrer: valueOrNull(body.referrer),
@@ -90,5 +105,27 @@ export class IngestService {
       intelligence,
       ip,
     };
+  }
+
+  private async loadPageGroupRules(): Promise<PageGroupRuleLike[]> {
+    try {
+      return await this.deps.prisma.pageGroupRule.findMany({
+        where: {
+          isActive: true,
+        },
+        orderBy: {
+          priority: 'asc',
+        },
+        select: {
+          name: true,
+          matchType: true,
+          pattern: true,
+          groupName: true,
+          priority: true,
+        },
+      });
+    } catch {
+      return [];
+    }
   }
 }

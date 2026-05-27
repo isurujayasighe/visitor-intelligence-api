@@ -68,6 +68,12 @@ model VisitorEvent {
   pageHostname      String?
   pagePath          String?
   pageTitle         String?
+  normalizedPageUrl String?
+  normalizedPageHostname String?
+  normalizedPagePath String?
+  pageGroup         String?
+  pageGroupSource   String?
+  pageSlug          String?
   userAgent         String?
   referrer          String?
 
@@ -101,5 +107,24 @@ model VisitorEvent {
   @@index([companyConfidence])
   @@index([pageHostname])
   @@index([pagePath])
+  @@index([pageGroup])
+  @@index([normalizedPagePath])
+  @@index([normalizedPageHostname])
+  @@index([occurredAt, pageGroup])
   @@index([utmSource])
+}
+
+model PageGroupRule {
+  id          String   @id @default(cuid())
+  name        String
+  matchType   String
+  pattern     String
+  groupName   String
+  priority    Int      @default(100)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, priority])
+  @@index([groupName])
 }
