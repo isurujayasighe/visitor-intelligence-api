@@ -12,6 +12,7 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:migrate:deploy": "prisma migrate deploy",
     "prisma:studio": "prisma studio",
+    "backfill:visit-sessions": "tsx src/scripts/backfill-visit-sessions.ts",
     "lint": "eslint \"src/**/*.ts\"",
     "typecheck": "tsc --noEmit"
   },

@@ -4,6 +4,8 @@ export const IngestVisitorEventBodySchema = Type.Object({
   ip_address: Type.Optional(Type.String()),
   event_name: Type.String({ minLength: 1, maxLength: 100 }),
   client_id: Type.Optional(Type.String({ maxLength: 150 })),
+  session_id: Type.Optional(Type.String({ maxLength: 200 })),
+  event_timestamp: Type.Optional(Type.String({ maxLength: 100 })),
 
   page_url: Type.Optional(Type.String({ maxLength: 2000 })),
   page_hostname: Type.Optional(Type.String({ maxLength: 255 })),

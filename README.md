@@ -107,6 +107,8 @@ Recommended Server GTM payload:
   "page_title": "{{Event Data - page_title}}",
   "user_agent": "{{Event Data - user_agent}}",
   "event_name": "{{Event Data - event_name}}",
+  "session_id": "{{Event Data - ga_session_id}}",
+  "event_timestamp": "{{Event Data - event_timestamp}}",
   "referrer": "{{Event Data - page_referrer}}",
   "client_id": "{{Event Data - client_id}}",
   "utm_source": "{{Event Data - utm_source}}",
@@ -116,6 +118,8 @@ Recommended Server GTM payload:
 ```
 
 Page normalization uses `page_url` first, then `page_path`, then `referrer` as a fallback. If only the referrer is available, the API still derives a normalized page path and business section where possible.
+
+Visit session tracking also uses `session_id` when available. If it is missing, the API creates a fallback session key from `ipHash + clientId + 30-minute time bucket`, so ingest does not fail.
 
 Fallback sample:
 
@@ -156,6 +160,9 @@ GET /api/v1/dashboard/visited-pages-grouped?from=2026-05-01&to=2026-05-27&limitG
 GET /api/v1/dashboard/page-group-rules
 GET /api/v1/dashboard/recent-visits?limit=50
 GET /api/v1/dashboard/ip-intelligence?limit=100
+GET /api/v1/dashboard/visit-sessions?from=2026-05-01&to=2026-05-27&limit=50&offset=0
+GET /api/v1/dashboard/visit-sessions/summary?from=2026-05-01&to=2026-05-27
+GET /api/v1/dashboard/url-group-rules
 ```
 
 List endpoints support pagination with `page` and `pageSize`. The frontend defaults to `pageSize=20`.
@@ -184,6 +191,36 @@ When `page` or `pageSize` is included, responses use:
 
 Existing non-paginated calls continue returning the original array shape for backward compatibility.
 
+Visit session filters:
+
+```text
+ip
+country
+landedUrlGroup
+exitUrlGroup
+minDurationSeconds
+maxDurationSeconds
+from
+to
+limit
+offset
+```
+
+URL grouping rules are regex-based and ordered by ascending `priority`. Default active groups are:
+
+```text
+Core services
+Advisory services
+Products
+Other pages
+```
+
+To backfill sessions from existing page-level `VisitorEvent` records:
+
+```bash
+npm run backfill:visit-sessions
+```
+
 ## Azure App Service
 
 Azure App Service passes the runtime port via `process.env.PORT`; this API uses that value automatically.
@@ -210,5 +247,6 @@ IP addresses may be considered personal data depending on jurisdiction. For safe
 - Set `STORE_RAW_IP=false`
 - Keep `ipHash` for deduplication
 - Store only country, region, city, ASN, network, and company guess
+- Visit session dashboards return raw IP only when `STORE_RAW_IP=true`; otherwise they show `hidden`/IP hash fallback.
 - Add a retention job later for old raw visitor events
 - Do not send raw IP to GA4 custom dimensions

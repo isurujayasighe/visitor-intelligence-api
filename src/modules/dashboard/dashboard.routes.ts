@@ -4,6 +4,8 @@ import type { PrismaClient } from '@prisma/client';
 import type { AppConfig } from '../../config/env';
 import { requireApiKey } from '../../shared/auth';
 import { parseDateRange } from '../../shared/date-range';
+import { createIpHash } from '../ip-intelligence/ip-hash';
+import { extractPublicIp } from '../ip-intelligence/ip-normalizer';
 import { normalizePageData, type PageGroupRuleLike } from '../page-intelligence/page-normalizer.service';
 
 type Options = {
@@ -30,6 +32,30 @@ const DEFAULT_PAGE_GROUP_RULES = [
   { name: 'Contact section', matchType: 'path_prefix', pattern: '/contact', groupName: 'Contact', priority: 60 },
   { name: 'Careers section', matchType: 'path_prefix', pattern: '/careers', groupName: 'Careers', priority: 70 },
   { name: 'About section', matchType: 'path_prefix', pattern: '/about', groupName: 'About', priority: 80 },
+];
+
+const DEFAULT_URL_GROUP_RULES = [
+  {
+    name: 'Core services URLs',
+    description: 'Core service page paths',
+    pattern: '^/services/(ifs|ifs-applications|integration|implementation|support|managed-services|outlook-integration|work-orders|scheduling).*$',
+    groupName: 'Core services',
+    priority: 10,
+  },
+  {
+    name: 'Advisory services URLs',
+    description: 'Advisory and consulting page paths',
+    pattern: '^/services/(business-strategy|business-strategy-assignment|advisory|consulting|digital-transformation|erp-advisory).*$',
+    groupName: 'Advisory services',
+    priority: 20,
+  },
+  {
+    name: 'Products URLs',
+    description: 'Product page paths',
+    pattern: '^/products/.*$',
+    groupName: 'Products',
+    priority: 30,
+  },
 ];
 
 function commonWhere(from: Date, to: Date) {
@@ -114,6 +140,71 @@ async function seedDefaultPageGroupRules(prisma: PrismaClient): Promise<void> {
     })),
     skipDuplicates: true,
   });
+}
+
+async function seedDefaultUrlGroupRules(prisma: PrismaClient): Promise<void> {
+  const existingCount = await prisma.urlGroupRule.count();
+
+  if (existingCount > 0) {
+    return;
+  }
+
+  await prisma.urlGroupRule.createMany({
+    data: DEFAULT_URL_GROUP_RULES.map((rule) => ({
+      ...rule,
+      isActive: true,
+    })),
+    skipDuplicates: true,
+  });
+}
+
+function visitSessionWhere(query: any, config: AppConfig) {
+  const { from, to } = parseDateRange(query);
+  const where: any = {
+    startedAt: {
+      gte: from,
+      lte: to,
+    },
+  };
+
+  if (query.country) {
+    where.OR = [
+      { country: { contains: String(query.country), mode: 'insensitive' } },
+      { countryCode: { equals: String(query.country), mode: 'insensitive' } },
+    ];
+  }
+
+  if (query.ip) {
+    const ip = extractPublicIp(String(query.ip));
+    if (ip) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { ipAddress: ip },
+            { ipHash: createIpHash(ip, config.ipHashSecret) },
+          ],
+        },
+      ];
+    }
+  }
+
+  if (query.landedUrlGroup) {
+    where.landedUrlGroup = String(query.landedUrlGroup);
+  }
+
+  if (query.exitUrlGroup) {
+    where.exitUrlGroup = String(query.exitUrlGroup);
+  }
+
+  if (query.minDurationSeconds || query.maxDurationSeconds) {
+    where.sessionDurationSeconds = {
+      ...(query.minDurationSeconds ? { gte: Number(query.minDurationSeconds) } : {}),
+      ...(query.maxDurationSeconds ? { lte: Number(query.maxDurationSeconds) } : {}),
+    };
+  }
+
+  return { where, from, to };
 }
 
 export async function registerDashboardRoutes(app: FastifyInstance, options: Options): Promise<void> {
@@ -516,6 +607,202 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
     }
 
     return paginatedResponse(mappedRows, pagination.page, pagination.pageSize, total);
+  });
+
+  app.get('/api/v1/dashboard/visit-sessions', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get visit sessions',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: Type.Intersect([
+        DateRangeQuerySchema,
+        Type.Object({
+          ip: Type.Optional(Type.String()),
+          country: Type.Optional(Type.String()),
+          landedUrlGroup: Type.Optional(Type.String()),
+          exitUrlGroup: Type.Optional(Type.String()),
+          minDurationSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+          maxDurationSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
+          offset: Type.Optional(Type.Number({ minimum: 0 })),
+        }),
+      ]),
+    },
+  }, async (request) => {
+    const query = request.query as any;
+    const { where } = visitSessionWhere(query, options.config);
+    const limit = parsePositiveInt(query.limit, 50, 200);
+    const offset = Math.max(0, Math.trunc(Number(query.offset || 0)));
+
+    const [rows, total] = await Promise.all([
+      options.prisma.visitSession.findMany({
+        where,
+        orderBy: {
+          startedAt: 'desc',
+        },
+        skip: offset,
+        take: limit,
+        select: {
+          id: true,
+          startedAt: true,
+          ipAddress: true,
+          ipHash: true,
+          country: true,
+          landedUrl: true,
+          landedUrlGroup: true,
+          exitUrl: true,
+          exitUrlGroup: true,
+          sessionDurationSeconds: true,
+          clientId: true,
+        },
+      }),
+      options.prisma.visitSession.count({ where }),
+    ]);
+
+    return {
+      items: rows.map((row) => ({
+        id: row.id,
+        date: row.startedAt,
+        ip_address: row.ipAddress || (options.config.storeRawIp ? null : 'hidden'),
+        ip_hash: row.ipAddress ? undefined : row.ipHash,
+        country: row.country,
+        landed_url: row.landedUrl,
+        landed_url_group: row.landedUrlGroup || 'Other pages',
+        exit_url: row.exitUrl,
+        exit_url_group: row.exitUrlGroup || 'Other pages',
+        session_duration_seconds: row.sessionDurationSeconds,
+        client_id: row.clientId,
+      })),
+      total,
+      limit,
+      offset,
+    };
+  });
+
+  app.get('/api/v1/dashboard/visit-sessions/summary', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get visit session summary',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: Type.Intersect([
+        DateRangeQuerySchema,
+        Type.Object({
+          ip: Type.Optional(Type.String()),
+          country: Type.Optional(Type.String()),
+          landedUrlGroup: Type.Optional(Type.String()),
+          exitUrlGroup: Type.Optional(Type.String()),
+          minDurationSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+          maxDurationSeconds: Type.Optional(Type.Number({ minimum: 0 })),
+        }),
+      ]),
+    },
+  }, async (request) => {
+    const query = request.query as any;
+    const { where, from, to } = visitSessionWhere(query, options.config);
+
+    const [
+      totalSessions,
+      durationAggregate,
+      landedGroups,
+      exitGroups,
+      countries,
+    ] = await Promise.all([
+      options.prisma.visitSession.count({ where }),
+      options.prisma.visitSession.aggregate({
+        where,
+        _avg: {
+          sessionDurationSeconds: true,
+        },
+      }),
+      options.prisma.visitSession.groupBy({
+        by: ['landedUrlGroup'],
+        where,
+        _count: {
+          _all: true,
+        },
+        orderBy: {
+          _count: {
+            id: 'desc',
+          },
+        },
+        take: 10,
+      }),
+      options.prisma.visitSession.groupBy({
+        by: ['exitUrlGroup'],
+        where,
+        _count: {
+          _all: true,
+        },
+        orderBy: {
+          _count: {
+            id: 'desc',
+          },
+        },
+        take: 10,
+      }),
+      options.prisma.visitSession.groupBy({
+        by: ['country'],
+        where,
+        _count: {
+          _all: true,
+        },
+        orderBy: {
+          _count: {
+            id: 'desc',
+          },
+        },
+        take: 10,
+      }),
+    ]);
+
+    return {
+      from,
+      to,
+      total_sessions: totalSessions,
+      average_session_duration_seconds: Math.round(durationAggregate._avg.sessionDurationSeconds || 0),
+      top_landed_url_groups: landedGroups.map((row) => ({
+        group_name: row.landedUrlGroup || 'Other pages',
+        sessions: row._count._all,
+      })),
+      top_exit_url_groups: exitGroups.map((row) => ({
+        group_name: row.exitUrlGroup || 'Other pages',
+        sessions: row._count._all,
+      })),
+      sessions_by_country: countries.map((row) => ({
+        country: row.country || 'Unknown',
+        sessions: row._count._all,
+      })),
+    };
+  });
+
+  app.get('/api/v1/dashboard/url-group-rules', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get active URL grouping regex rules',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+    },
+  }, async () => {
+    await seedDefaultUrlGroupRules(options.prisma);
+    const rows = await options.prisma.urlGroupRule.findMany({
+      where: {
+        isActive: true,
+      },
+      orderBy: {
+        priority: 'asc',
+      },
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      name: row.name,
+      description: row.description,
+      pattern: row.pattern,
+      group_name: row.groupName,
+      priority: row.priority,
+      is_active: row.isActive,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+    }));
   });
 
   app.get('/api/v1/dashboard/recent-visits', {

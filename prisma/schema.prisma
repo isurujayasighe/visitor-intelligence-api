@@ -95,6 +95,8 @@ model VisitorEvent {
 
   ipIntelligenceId  String?
   ipIntelligence    IpIntelligence?   @relation(fields: [ipIntelligenceId], references: [id], onDelete: SetNull)
+  visitSessionId    String?
+  visitSession      VisitSession?     @relation(fields: [visitSessionId], references: [id], onDelete: SetNull)
 
   rawPayload         Json?
 
@@ -111,13 +113,71 @@ model VisitorEvent {
   @@index([normalizedPagePath])
   @@index([normalizedPageHostname])
   @@index([occurredAt, pageGroup])
+  @@index([visitSessionId])
   @@index([utmSource])
+}
+
+model VisitSession {
+  id                         String         @id @default(cuid())
+
+  sessionKey                 String         @unique
+  clientId                   String?
+  ipHash                     String
+  ipAddress                  String?
+
+  country                    String?
+  countryCode                String?
+
+  startedAt                  DateTime
+  endedAt                    DateTime?
+  sessionDurationSeconds     Int?
+
+  landedUrl                  String?
+  landedUrlHostname          String?
+  landedUrlPath              String?
+  landedUrlGroup             String?
+  landedUrlGroupRuleId       String?
+
+  exitUrl                    String?
+  exitUrlHostname            String?
+  exitUrlPath                String?
+  exitUrlGroup               String?
+  exitUrlGroupRuleId         String?
+
+  userAgent                  String?
+
+  createdAt                  DateTime       @default(now())
+  updatedAt                  DateTime       @updatedAt
+
+  events                     VisitorEvent[]
+
+  @@index([startedAt])
+  @@index([countryCode])
+  @@index([landedUrlGroup])
+  @@index([exitUrlGroup])
+  @@index([ipHash])
+  @@index([sessionDurationSeconds])
 }
 
 model PageGroupRule {
   id          String   @id @default(cuid())
   name        String
   matchType   String
+  pattern     String
+  groupName   String
+  priority    Int      @default(100)
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isActive, priority])
+  @@index([groupName])
+}
+
+model UrlGroupRule {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
   pattern     String
   groupName   String
   priority    Int      @default(100)
