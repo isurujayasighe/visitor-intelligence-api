@@ -908,6 +908,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
         take: shouldPaginate ? pagination.take : limit,
         select: {
           id: true,
+          ipAddress: true,
           country: true,
           countryCode: true,
           region: true,
@@ -930,6 +931,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
 
     const mappedRows = rows.map((row) => ({
       id: row.id,
+      ip_address: row.ipAddress,
       country: row.country,
       country_code: row.countryCode,
       region: row.region,
