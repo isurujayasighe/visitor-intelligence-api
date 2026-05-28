@@ -41,6 +41,12 @@ model IpIntelligence {
   companyDomain     String?
   companyConfidence CompanyConfidence @default(low)
   companyReason     String?
+  networkType       String?
+  isLeadNetwork     Boolean           @default(false)
+  companySource     String?
+  companyEvidence   Json?
+  matchedCompanyMappingId String?
+  matchedNetworkRuleId String?
 
   geoSource         String?
   asnSource         String?
@@ -56,6 +62,8 @@ model IpIntelligence {
   @@index([asn])
   @@index([companyGuess])
   @@index([companyConfidence])
+  @@index([networkType])
+  @@index([isLeadNetwork])
 }
 
 model VisitorEvent {
@@ -187,4 +195,42 @@ model UrlGroupRule {
 
   @@index([isActive, priority])
   @@index([groupName])
+}
+
+model CompanyIpMapping {
+  id              String   @id @default(cuid())
+
+  companyName     String
+  companyDomain   String?
+  ipRange         String
+  source          String
+  confidence      String
+  notes           String?
+
+  isActive        Boolean  @default(true)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([companyName])
+  @@index([companyDomain])
+  @@index([isActive])
+}
+
+model NetworkClassifierRule {
+  id            String   @id @default(cuid())
+
+  name          String
+  pattern       String
+  matchType     String
+  networkType   String
+  isLeadNetwork Boolean  @default(false)
+  priority      Int      @default(100)
+  isActive      Boolean  @default(true)
+
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isActive, priority])
+  @@index([networkType])
 }

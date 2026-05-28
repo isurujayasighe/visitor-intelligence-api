@@ -5,7 +5,7 @@ import { createIpHash } from './ip-hash';
 import { lookupReverseDns } from './reverse-dns.service';
 import { lookupRdap } from './rdap.service';
 import { lookupIpinfoLite } from './ipinfo.service';
-import { guessCompany } from './company-guess.service';
+import { CompanyIntelligenceService } from '../company-intelligence/company-intelligence.service';
 
 type Dependencies = {
   config: AppConfig;
@@ -34,14 +34,42 @@ export class IpIntelligenceService {
     const ipinfo = await lookupIpinfoLite(ip, config.ipinfoToken);
     const reverseDns = await lookupReverseDns(ip);
     const rdap = config.enableRdapLookup ? await lookupRdap(ip) : {};
+    const [mappings, networkRules] = await Promise.all([
+      prisma.companyIpMapping.findMany({
+        where: { isActive: true },
+        select: {
+          id: true,
+          companyName: true,
+          companyDomain: true,
+          ipRange: true,
+          source: true,
+          confidence: true,
+        },
+      }),
+      prisma.networkClassifierRule.findMany({
+        where: { isActive: true },
+        orderBy: { priority: 'asc' },
+        select: {
+          id: true,
+          name: true,
+          pattern: true,
+          matchType: true,
+          networkType: true,
+          isLeadNetwork: true,
+          priority: true,
+        },
+      }),
+    ]);
 
-    const company = guessCompany({
-      maxmindAsName: maxmind.asName,
-      ipinfoAsName: ipinfo.ipinfoAsName,
+    const company = new CompanyIntelligenceService().identifyCompany({
+      ip,
+      asName: maxmind.asName || ipinfo.ipinfoAsName,
       asDomain: ipinfo.ipinfoAsDomain,
       reverseDns,
       rdapName: rdap.rdapName,
       rdapEntity: rdap.rdapEntity,
+      mappings,
+      networkRules,
     });
 
     const data = {
@@ -73,6 +101,12 @@ export class IpIntelligenceService {
       companyDomain: company.companyDomain || null,
       companyConfidence: company.companyConfidence,
       companyReason: company.companyReason,
+      networkType: company.networkType,
+      isLeadNetwork: company.isLeadNetwork,
+      companySource: company.companySource,
+      companyEvidence: company.companyEvidence,
+      matchedCompanyMappingId: company.matchedCompanyMappingId || null,
+      matchedNetworkRuleId: company.matchedNetworkRuleId || null,
 
       geoSource: maxmind.geoSource || null,
       asnSource: maxmind.asnSource || null,

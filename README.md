@@ -163,6 +163,13 @@ GET /api/v1/dashboard/ip-intelligence?limit=100
 GET /api/v1/dashboard/visit-sessions?from=2026-05-01&to=2026-05-27&limit=50&offset=0
 GET /api/v1/dashboard/visit-sessions/summary?from=2026-05-01&to=2026-05-27
 GET /api/v1/dashboard/url-group-rules
+GET /api/v1/dashboard/company-intelligence/leads
+GET /api/v1/dashboard/company-intelligence/network-quality
+GET /api/v1/dashboard/company-ip-mappings
+POST /api/v1/dashboard/company-ip-mappings
+PATCH /api/v1/dashboard/company-ip-mappings/:id
+DELETE /api/v1/dashboard/company-ip-mappings/:id
+GET /api/v1/dashboard/network-classifier-rules
 ```
 
 List endpoints support pagination with `page` and `pageSize`. The frontend defaults to `pageSize=20`.
@@ -250,3 +257,80 @@ IP addresses may be considered personal data depending on jurisdiction. For safe
 - Visit session dashboards return raw IP only when `STORE_RAW_IP=true`; otherwise they show `hidden`/IP hash fallback.
 - Add a retention job later for old raw visitor events
 - Do not send raw IP to GA4 custom dimensions
+
+## Company intelligence
+
+Company intelligence identifies possible companies/accounts behind visits. It does not identify exact people.
+
+Signal priority:
+
+```text
+1. Manual CompanyIpMapping CIDR match
+2. Reverse DNS domain match
+3. RDAP + ASN agreement
+4. ASN organization
+5. RDAP organization
+6. ISP/mobile/cloud/VPN/proxy filter or unknown
+```
+
+ISP, mobile, cloud, VPN, and proxy networks are marked as non-lead traffic:
+
+```text
+companyGuess = Unknown
+companyConfidence = low
+isLeadNetwork = false
+networkType = isp | mobile | cloud | vpn | proxy
+```
+
+Manual mappings override all other signals:
+
+```json
+{
+  "companyName": "ABC Manufacturing Ltd",
+  "companyDomain": "abcmanufacturing.com",
+  "ipRange": "203.0.113.0/24",
+  "confidence": "high",
+  "source": "manual",
+  "notes": "Provided by sales team"
+}
+```
+
+Seed default network classifier rules:
+
+```bash
+npm run seed:company-intelligence
+```
+
+Every IP intelligence row stores confidence, reason, source, network type, lead-network flag, matched rule IDs, and JSON evidence so marketing can understand reliability.
+
+Confidence levels:
+
+```text
+high   Manual mapping, reverse DNS company domain, or strong RDAP + ASN agreement
+medium Corporate-looking ASN or RDAP organization
+low    ISP/mobile/cloud/VPN/proxy/unknown traffic
+```
+
+Company leads endpoint filters and pagination:
+
+```text
+GET /api/v1/dashboard/company-intelligence/leads?from=2026-05-01&to=2026-05-28&confidence=high&country=United&company=ABC&limit=50&offset=0
+```
+
+Network quality endpoint:
+
+```text
+GET /api/v1/dashboard/company-intelligence/network-quality?from=2026-05-01&to=2026-05-28
+```
+
+Manual mapping endpoints:
+
+```text
+GET /api/v1/dashboard/company-ip-mappings
+POST /api/v1/dashboard/company-ip-mappings
+PATCH /api/v1/dashboard/company-ip-mappings/:id
+DELETE /api/v1/dashboard/company-ip-mappings/:id
+GET /api/v1/dashboard/network-classifier-rules
+```
+
+Use manual mappings for known customer offices, target-account VPN egress ranges, or verified corporate IP ranges. Invalid CIDR and invalid regex rules are ignored or rejected safely so enrichment cannot crash the ingest path.

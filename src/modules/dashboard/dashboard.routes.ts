@@ -6,6 +6,7 @@ import { requireApiKey } from '../../shared/auth';
 import { parseDateRange } from '../../shared/date-range';
 import { createIpHash } from '../ip-intelligence/ip-hash';
 import { extractPublicIp } from '../ip-intelligence/ip-normalizer';
+import { isIpInCidr } from '../company-intelligence/cidr-match.service';
 import { normalizePageData, type PageGroupRuleLike } from '../page-intelligence/page-normalizer.service';
 
 type Options = {
@@ -804,6 +805,231 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       created_at: row.createdAt,
       updated_at: row.updatedAt,
     }));
+  });
+
+  app.get('/api/v1/dashboard/company-intelligence/leads', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get lead-worthy company intelligence',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: Type.Intersect([
+        DateRangeQuerySchema,
+        Type.Object({
+          confidence: Type.Optional(Type.String()),
+          country: Type.Optional(Type.String()),
+          company: Type.Optional(Type.String()),
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
+          offset: Type.Optional(Type.Number({ minimum: 0 })),
+        }),
+      ]),
+    },
+  }, async (request) => {
+    const query = request.query as any;
+    const { from, to } = parseDateRange(query);
+    const limit = parsePositiveInt(query.limit, 50, 200);
+    const offset = Math.max(0, Math.trunc(Number(query.offset || 0)));
+    const where: any = {
+      occurredAt: { gte: from, lte: to },
+      ipIntelligence: {
+        isLeadNetwork: true,
+        companyGuess: { not: 'Unknown' },
+        ...(query.confidence ? { companyConfidence: query.confidence } : {}),
+        ...(query.country ? { country: { contains: String(query.country), mode: 'insensitive' } } : {}),
+        ...(query.company ? { companyGuess: { contains: String(query.company), mode: 'insensitive' } } : {}),
+      },
+    };
+
+    const grouped = await options.prisma.visitorEvent.groupBy({
+      by: ['ipIntelligenceId'],
+      where: {
+        ...where,
+        ipIntelligenceId: { not: null },
+      },
+      _count: { _all: true },
+      _max: { occurredAt: true },
+      orderBy: { _max: { occurredAt: 'desc' } },
+    });
+    const ids = grouped.map((row) => row.ipIntelligenceId).filter(Boolean) as string[];
+    const [intelligenceRows, sessionRows] = await Promise.all([
+      options.prisma.ipIntelligence.findMany({
+        where: { id: { in: ids } },
+      }),
+      options.prisma.visitorEvent.findMany({
+        where: {
+          ...where,
+          ipIntelligenceId: { in: ids },
+        },
+        select: {
+          ipIntelligenceId: true,
+          visitSessionId: true,
+        },
+      }),
+    ]);
+    const byId = new Map(intelligenceRows.map((row) => [row.id, row]));
+    const sessionsByIntelligenceId = new Map<string, Set<string>>();
+
+    sessionRows.forEach((row) => {
+      if (!row.ipIntelligenceId || !row.visitSessionId) return;
+      const sessions = sessionsByIntelligenceId.get(row.ipIntelligenceId) || new Set<string>();
+      sessions.add(row.visitSessionId);
+      sessionsByIntelligenceId.set(row.ipIntelligenceId, sessions);
+    });
+
+    const items = grouped.map((row) => {
+      const intelligence = byId.get(row.ipIntelligenceId!);
+      if (!intelligence) return null;
+      return {
+        company_guess: intelligence.companyGuess,
+        company_domain: intelligence.companyDomain,
+        confidence: intelligence.companyConfidence,
+        country: intelligence.country,
+        city: intelligence.city,
+        network_name: intelligence.networkName,
+        asn: intelligence.asn,
+        visits: row._count._all,
+        unique_sessions: sessionsByIntelligenceId.get(row.ipIntelligenceId!)?.size || 0,
+        last_seen_at: row._max.occurredAt,
+        reason: intelligence.companyReason,
+      };
+    }).filter(Boolean);
+
+    return {
+      items: items.slice(offset, offset + limit),
+      total: items.length,
+    };
+  });
+
+  app.get('/api/v1/dashboard/company-intelligence/network-quality', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get company intelligence network quality',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: DateRangeQuerySchema,
+    },
+  }, async (request) => {
+    const { from, to } = parseDateRange(request.query as any);
+    const where = { occurredAt: { gte: from, lte: to } };
+    const [leadNetworkVisits, weakNetworkVisits, networkTypes] = await Promise.all([
+      options.prisma.visitorEvent.count({ where: { ...where, ipIntelligence: { isLeadNetwork: true } } }),
+      options.prisma.visitorEvent.count({ where: { ...where, OR: [{ ipIntelligence: { isLeadNetwork: false } }, { ipIntelligenceId: null }] } }),
+      options.prisma.visitorEvent.groupBy({
+        by: ['ipIntelligenceId'],
+        where,
+        _count: { _all: true },
+      }),
+    ]);
+    const intelligenceRows = await options.prisma.ipIntelligence.findMany({
+      where: { id: { in: networkTypes.map((row) => row.ipIntelligenceId).filter(Boolean) as string[] } },
+      select: { id: true, networkType: true },
+    });
+    const byId = new Map(intelligenceRows.map((row) => [row.id, row.networkType || 'unknown']));
+    const typeCounts = new Map<string, number>();
+    networkTypes.forEach((row) => {
+      const networkType = row.ipIntelligenceId ? byId.get(row.ipIntelligenceId) || 'unknown' : 'unknown';
+      typeCounts.set(networkType, (typeCounts.get(networkType) || 0) + row._count._all);
+    });
+
+    return {
+      lead_network_visits: leadNetworkVisits,
+      unknown_or_weak_network_visits: weakNetworkVisits,
+      network_types: Array.from(typeCounts.entries()).map(([networkType, visits]) => ({ network_type: networkType, visits })),
+    };
+  });
+
+  app.get('/api/v1/dashboard/company-ip-mappings', {
+    schema: { tags: ['Dashboard'], summary: 'Get company IP mappings', security: [{ bearerAuth: [] }, { apiKeyAuth: [] }] },
+  }, async () => {
+    const rows = await options.prisma.companyIpMapping.findMany({ orderBy: { createdAt: 'desc' } });
+    return rows.map((row) => ({
+      id: row.id,
+      company_name: row.companyName,
+      company_domain: row.companyDomain,
+      ip_range: row.ipRange,
+      source: row.source,
+      confidence: row.confidence,
+      notes: row.notes,
+      is_active: row.isActive,
+      created_at: row.createdAt,
+      updated_at: row.updatedAt,
+    }));
+  });
+
+  app.post('/api/v1/dashboard/company-ip-mappings', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Create company IP mapping',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      body: Type.Object({
+        companyName: Type.String({ minLength: 1 }),
+        companyDomain: Type.Optional(Type.String()),
+        ipRange: Type.String({ minLength: 1 }),
+        confidence: Type.String(),
+        source: Type.Optional(Type.String()),
+        notes: Type.Optional(Type.String()),
+      }),
+    },
+  }, async (request, reply) => {
+    const body = request.body as any;
+    if (!isIpInCidr(body.ipRange.split('/')[0], body.ipRange)) {
+      return reply.status(400).send({ status: 'error', message: 'Invalid IPv4 CIDR or IP range.' });
+    }
+    const row = await options.prisma.companyIpMapping.create({
+      data: {
+        companyName: body.companyName,
+        companyDomain: body.companyDomain || null,
+        ipRange: body.ipRange,
+        confidence: body.confidence,
+        source: body.source || 'manual',
+        notes: body.notes || null,
+      },
+    });
+    return row;
+  });
+
+  app.patch('/api/v1/dashboard/company-ip-mappings/:id', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Update company IP mapping',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      params: Type.Object({ id: Type.String() }),
+      body: Type.Partial(Type.Object({
+        companyName: Type.String(),
+        companyDomain: Type.String(),
+        ipRange: Type.String(),
+        confidence: Type.String(),
+        source: Type.String(),
+        notes: Type.String(),
+        isActive: Type.Boolean(),
+      })),
+    },
+  }, async (request, reply) => {
+    const params = request.params as any;
+    const body = request.body as any;
+    if (body.ipRange && !isIpInCidr(body.ipRange.split('/')[0], body.ipRange)) {
+      return reply.status(400).send({ status: 'error', message: 'Invalid IPv4 CIDR or IP range.' });
+    }
+    return options.prisma.companyIpMapping.update({ where: { id: params.id }, data: body });
+  });
+
+  app.delete('/api/v1/dashboard/company-ip-mappings/:id', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Disable company IP mapping',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      params: Type.Object({ id: Type.String() }),
+    },
+  }, async (request) => {
+    const params = request.params as any;
+    return options.prisma.companyIpMapping.update({ where: { id: params.id }, data: { isActive: false } });
+  });
+
+  app.get('/api/v1/dashboard/network-classifier-rules', {
+    schema: { tags: ['Dashboard'], summary: 'Get active network classifier rules', security: [{ bearerAuth: [] }, { apiKeyAuth: [] }] },
+  }, async () => {
+    return options.prisma.networkClassifierRule.findMany({
+      where: { isActive: true },
+      orderBy: { priority: 'asc' },
+    });
   });
 
   app.get('/api/v1/dashboard/recent-visits', {
