@@ -39,7 +39,7 @@ const DEFAULT_URL_GROUP_RULES = [
   {
     name: 'Core services URLs',
     description: 'Core service page paths',
-    pattern: '^/services/(ifs|ifs-applications|integration|implementation|support|managed-services|outlook-integration|work-orders|scheduling).*$',
+    pattern: '^/services/(ifs|ifs-applications|integration|implementation|support|managed-services|application-managed-support|managed-support|outlook-integration|work-orders|scheduling).*$',
     groupName: 'Core services',
     priority: 10,
   },
