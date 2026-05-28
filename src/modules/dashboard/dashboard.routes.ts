@@ -1038,9 +1038,17 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       summary: 'Get recent visitor events',
       security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       querystring: Type.Intersect([
+        DateRangeQuerySchema,
         PaginationQuerySchema,
         Type.Object({
           limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
+          ip: Type.Optional(Type.String()),
+          country: Type.Optional(Type.String()),
+          company: Type.Optional(Type.String()),
+          confidence: Type.Optional(Type.String()),
+          pageSearch: Type.Optional(Type.String()),
+          source: Type.Optional(Type.String()),
+          eventName: Type.Optional(Type.String()),
         }),
       ]),
     },
@@ -1049,9 +1057,92 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
     const limit = Number(query.limit || 50);
     const pagination = parsePagination(query);
     const shouldPaginate = hasPagination(query);
+    const where: any = {};
+
+    if (query.from || query.to) {
+      const { from, to } = parseDateRange(query);
+      where.occurredAt = {
+        gte: from,
+        lte: to,
+      };
+    }
+
+    if (query.ip) {
+      const ip = extractPublicIp(String(query.ip));
+      if (ip) {
+        where.AND = [
+          ...(where.AND || []),
+          {
+            OR: [
+              { ipAddress: ip },
+              { ipHash: createIpHash(ip, options.config.ipHashSecret) },
+            ],
+          },
+        ];
+      }
+    }
+
+    if (query.country) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { country: { contains: String(query.country), mode: 'insensitive' } },
+            { countryCode: { equals: String(query.country), mode: 'insensitive' } },
+          ],
+        },
+      ];
+    }
+
+    if (query.company) {
+      where.companyGuess = {
+        contains: String(query.company),
+        mode: 'insensitive',
+      };
+    }
+
+    if (query.confidence) {
+      where.companyConfidence = String(query.confidence);
+    }
+
+    if (query.pageSearch) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { pageTitle: { contains: String(query.pageSearch), mode: 'insensitive' } },
+            { pageUrl: { contains: String(query.pageSearch), mode: 'insensitive' } },
+            { pagePath: { contains: String(query.pageSearch), mode: 'insensitive' } },
+            { normalizedPagePath: { contains: String(query.pageSearch), mode: 'insensitive' } },
+          ],
+        },
+      ];
+    }
+
+    if (query.source) {
+      where.AND = [
+        ...(where.AND || []),
+        {
+          OR: [
+            { utmSource: { contains: String(query.source), mode: 'insensitive' } },
+            { utmMedium: { contains: String(query.source), mode: 'insensitive' } },
+            { utmCampaign: { contains: String(query.source), mode: 'insensitive' } },
+            { referrer: { contains: String(query.source), mode: 'insensitive' } },
+          ],
+        },
+      ];
+    }
+
+    if (query.eventName) {
+      where.eventName = {
+        contains: String(query.eventName),
+        mode: 'insensitive',
+      };
+    }
 
     const [rows, total] = await Promise.all([
       options.prisma.visitorEvent.findMany({
+        where,
         orderBy: {
           occurredAt: 'desc',
         },
@@ -1077,7 +1168,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
           utmCampaign: true,
         },
       }),
-      shouldPaginate ? options.prisma.visitorEvent.count() : Promise.resolve(0),
+      shouldPaginate ? options.prisma.visitorEvent.count({ where }) : Promise.resolve(0),
     ]);
 
     const mappedRows = rows.map((row) => ({
