@@ -27,6 +27,7 @@ export type NormalizedPageData = {
 const FALLBACK_RULES: PageGroupRuleLike[] = [
   { matchType: 'path_prefix', pattern: '/services', groupName: 'Services', priority: 10 },
   { matchType: 'path_prefix', pattern: '/products', groupName: 'Products', priority: 20 },
+  { matchType: 'path_prefix', pattern: '/product', groupName: 'Products', priority: 21 },
   { matchType: 'path_prefix', pattern: '/solutions', groupName: 'Solutions', priority: 30 },
   { matchType: 'path_prefix', pattern: '/blog', groupName: 'Blog', priority: 40 },
   { matchType: 'path_prefix', pattern: '/case-studies', groupName: 'Case Studies', priority: 50 },

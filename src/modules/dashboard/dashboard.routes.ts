@@ -26,6 +26,7 @@ const PaginationQuerySchema = Type.Object({
 const DEFAULT_PAGE_GROUP_RULES = [
   { name: 'Services section', matchType: 'path_prefix', pattern: '/services', groupName: 'Services', priority: 10 },
   { name: 'Products section', matchType: 'path_prefix', pattern: '/products', groupName: 'Products', priority: 20 },
+  { name: 'Product section', matchType: 'path_prefix', pattern: '/product', groupName: 'Products', priority: 21 },
   { name: 'Solutions section', matchType: 'path_prefix', pattern: '/solutions', groupName: 'Solutions', priority: 30 },
   { name: 'Blog section', matchType: 'path_prefix', pattern: '/blog', groupName: 'Blog', priority: 40 },
   { name: 'Case studies section', matchType: 'path_prefix', pattern: '/case-studies', groupName: 'Case Studies', priority: 50 },
@@ -52,7 +53,7 @@ const DEFAULT_URL_GROUP_RULES = [
   {
     name: 'Products URLs',
     description: 'Product page paths',
-    pattern: '^/products/.*$',
+    pattern: '^/products?/.*$',
     groupName: 'Products',
     priority: 30,
   },
