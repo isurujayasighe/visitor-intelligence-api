@@ -158,6 +158,32 @@ GET /api/v1/dashboard/recent-visits?limit=50
 GET /api/v1/dashboard/ip-intelligence?limit=100
 ```
 
+List endpoints support pagination with `page` and `pageSize`. The frontend defaults to `pageSize=20`.
+
+```text
+GET /api/v1/dashboard/recent-visits?page=1&pageSize=20
+GET /api/v1/dashboard/ip-intelligence?page=1&pageSize=20
+GET /api/v1/dashboard/top-companies?from=2026-05-01&to=2026-05-27&page=1&pageSize=20
+GET /api/v1/dashboard/top-pages?from=2026-05-01&to=2026-05-27&page=1&pageSize=20
+GET /api/v1/dashboard/visited-pages-grouped?from=2026-05-01&to=2026-05-27&page=1&pageSize=20
+```
+
+When `page` or `pageSize` is included, responses use:
+
+```json
+{
+  "data": [],
+  "pagination": {
+    "page": 1,
+    "page_size": 20,
+    "total": 0,
+    "total_pages": 1
+  }
+}
+```
+
+Existing non-paginated calls continue returning the original array shape for backward compatibility.
+
 ## Azure App Service
 
 Azure App Service passes the runtime port via `process.env.PORT`; this API uses that value automatically.

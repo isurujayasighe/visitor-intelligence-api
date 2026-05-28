@@ -16,6 +16,11 @@ const DateRangeQuerySchema = Type.Object({
   to: Type.Optional(Type.String()),
 });
 
+const PaginationQuerySchema = Type.Object({
+  page: Type.Optional(Type.Number({ minimum: 1, maximum: 10000 })),
+  pageSize: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
+});
+
 const DEFAULT_PAGE_GROUP_RULES = [
   { name: 'Services section', matchType: 'path_prefix', pattern: '/services', groupName: 'Services', priority: 10 },
   { name: 'Products section', matchType: 'path_prefix', pattern: '/products', groupName: 'Products', priority: 20 },
@@ -40,6 +45,33 @@ function parsePositiveInt(value: unknown, fallback: number, maximum: number): nu
   const parsed = Number(value || fallback);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(1, Math.min(Math.trunc(parsed), maximum));
+}
+
+function hasPagination(query: Record<string, unknown>): boolean {
+  return query.page !== undefined || query.pageSize !== undefined;
+}
+
+function parsePagination(query: Record<string, unknown>) {
+  const page = parsePositiveInt(query.page, 1, 10000);
+  const pageSize = parsePositiveInt(query.pageSize, 20, 200);
+  return {
+    page,
+    pageSize,
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  };
+}
+
+function paginatedResponse<T>(data: T[], page: number, pageSize: number, total: number) {
+  return {
+    data,
+    pagination: {
+      page,
+      page_size: pageSize,
+      total,
+      total_pages: Math.max(1, Math.ceil(total / pageSize)),
+    },
+  };
 }
 
 function parseBoolean(value: unknown): boolean {
@@ -171,6 +203,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       querystring: Type.Intersect([
         DateRangeQuerySchema,
+        PaginationQuerySchema,
         Type.Object({
           limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
         }),
@@ -180,6 +213,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
     const query = request.query as any;
     const { from, to } = parseDateRange(query);
     const limit = Number(query.limit || 25);
+    const pagination = parsePagination(query);
+    const shouldPaginate = hasPagination(query);
 
     const rows = await options.prisma.visitorEvent.groupBy({
       by: ['companyGuess', 'companyConfidence', 'networkName', 'asn', 'country', 'city'],
@@ -197,10 +232,10 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
           id: 'desc',
         },
       },
-      take: limit,
+      take: shouldPaginate ? undefined : limit,
     });
 
-    return rows.map((row) => ({
+    const mappedRows = rows.map((row) => ({
       company_guess: row.companyGuess,
       company_confidence: row.companyConfidence,
       network_name: row.networkName,
@@ -209,6 +244,17 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       city: row.city,
       visits: row._count._all,
     }));
+
+    if (!shouldPaginate) {
+      return mappedRows;
+    }
+
+    return paginatedResponse(
+      mappedRows.slice(pagination.skip, pagination.skip + pagination.take),
+      pagination.page,
+      pagination.pageSize,
+      mappedRows.length,
+    );
   });
 
   app.get('/api/v1/dashboard/top-pages', {
@@ -218,6 +264,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       querystring: Type.Intersect([
         DateRangeQuerySchema,
+        PaginationQuerySchema,
         Type.Object({
           limit: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
         }),
@@ -227,6 +274,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
     const query = request.query as any;
     const { from, to } = parseDateRange(query);
     const limit = Number(query.limit || 25);
+    const pagination = parsePagination(query);
+    const shouldPaginate = hasPagination(query);
 
     const rows = await options.prisma.visitorEvent.groupBy({
       by: ['normalizedPageHostname', 'normalizedPagePath', 'pageHostname', 'pagePath', 'pageTitle'],
@@ -239,15 +288,26 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
           id: 'desc',
         },
       },
-      take: limit,
+      take: shouldPaginate ? undefined : limit,
     });
 
-    return rows.map((row) => ({
+    const mappedRows = rows.map((row) => ({
       page_hostname: row.normalizedPageHostname || row.pageHostname,
       page_path: row.normalizedPagePath || row.pagePath,
       page_title: row.pageTitle,
       visits: row._count._all,
     }));
+
+    if (!shouldPaginate) {
+      return mappedRows;
+    }
+
+    return paginatedResponse(
+      mappedRows.slice(pagination.skip, pagination.skip + pagination.take),
+      pagination.page,
+      pagination.pageSize,
+      mappedRows.length,
+    );
   });
 
   app.get('/api/v1/dashboard/visited-pages-grouped', {
@@ -257,6 +317,7 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
       querystring: Type.Intersect([
         DateRangeQuerySchema,
+        PaginationQuerySchema,
         Type.Object({
           excludeUnknown: Type.Optional(Type.Union([Type.Boolean(), Type.String()])),
           limitGroups: Type.Optional(Type.Number({ minimum: 1, maximum: 100 })),
@@ -270,6 +331,8 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
     const excludeUnknown = parseBoolean(query.excludeUnknown);
     const limitGroups = parsePositiveInt(query.limitGroups, 25, 100);
     const limitPagesPerGroup = parsePositiveInt(query.limitPagesPerGroup, 20, 100);
+    const pagination = parsePagination(query);
+    const shouldPaginate = hasPagination(query);
     const rules = await loadPageGroupRules(options.prisma);
 
     const rows = await options.prisma.visitorEvent.findMany({
@@ -377,9 +440,9 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       if (row.occurredAt > page.last_visited_at) page.last_visited_at = row.occurredAt;
     });
 
-    return Array.from(groups.values())
+    const mappedGroups = Array.from(groups.values())
       .sort((left, right) => right.visits - left.visits)
-      .slice(0, limitGroups)
+      .slice(0, shouldPaginate ? undefined : limitGroups)
       .map((group) => ({
         group_name: group.group_name,
         visits: group.visits,
@@ -399,6 +462,17 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
             last_visited_at: page.last_visited_at,
           })),
       }));
+
+    if (!shouldPaginate) {
+      return mappedGroups;
+    }
+
+    return paginatedResponse(
+      mappedGroups.slice(pagination.skip, pagination.skip + pagination.take),
+      pagination.page,
+      pagination.pageSize,
+      mappedGroups.length,
+    );
   });
 
   app.get('/api/v1/dashboard/page-group-rules', {
@@ -406,17 +480,26 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       tags: ['Dashboard'],
       summary: 'Get page grouping rules',
       security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: PaginationQuerySchema,
     },
-  }, async () => {
+  }, async (request) => {
+    const query = request.query as any;
+    const pagination = parsePagination(query);
+    const shouldPaginate = hasPagination(query);
     await seedDefaultPageGroupRules(options.prisma);
-    const rows = await options.prisma.pageGroupRule.findMany({
-      orderBy: [
-        { isActive: 'desc' },
-        { priority: 'asc' },
-      ],
-    });
+    const [rows, total] = await Promise.all([
+      options.prisma.pageGroupRule.findMany({
+        orderBy: [
+          { isActive: 'desc' },
+          { priority: 'asc' },
+        ],
+        skip: shouldPaginate ? pagination.skip : undefined,
+        take: shouldPaginate ? pagination.take : undefined,
+      }),
+      shouldPaginate ? options.prisma.pageGroupRule.count() : Promise.resolve(0),
+    ]);
 
-    return rows.map((row) => ({
+    const mappedRows = rows.map((row) => ({
       id: row.id,
       name: row.name,
       match_type: row.matchType,
@@ -427,6 +510,12 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       created_at: row.createdAt,
       updated_at: row.updatedAt,
     }));
+
+    if (!shouldPaginate) {
+      return mappedRows;
+    }
+
+    return paginatedResponse(mappedRows, pagination.page, pagination.pageSize, total);
   });
 
   app.get('/api/v1/dashboard/recent-visits', {
@@ -434,41 +523,50 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       tags: ['Dashboard'],
       summary: 'Get recent visitor events',
       security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
-      querystring: Type.Object({
-        limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
-      }),
+      querystring: Type.Intersect([
+        PaginationQuerySchema,
+        Type.Object({
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
+        }),
+      ]),
     },
   }, async (request) => {
     const query = request.query as any;
     const limit = Number(query.limit || 50);
+    const pagination = parsePagination(query);
+    const shouldPaginate = hasPagination(query);
 
-    const rows = await options.prisma.visitorEvent.findMany({
-      orderBy: {
-        occurredAt: 'desc',
-      },
-      take: limit,
-      select: {
-        id: true,
-        occurredAt: true,
-        eventName: true,
-        ipAddress: true,
-        pageUrl: true,
-        pageTitle: true,
-        referrer: true,
-        country: true,
-        region: true,
-        city: true,
-        asn: true,
-        networkName: true,
-        companyGuess: true,
-        companyConfidence: true,
-        utmSource: true,
-        utmMedium: true,
-        utmCampaign: true,
-      },
-    });
+    const [rows, total] = await Promise.all([
+      options.prisma.visitorEvent.findMany({
+        orderBy: {
+          occurredAt: 'desc',
+        },
+        skip: shouldPaginate ? pagination.skip : undefined,
+        take: shouldPaginate ? pagination.take : limit,
+        select: {
+          id: true,
+          occurredAt: true,
+          eventName: true,
+          ipAddress: true,
+          pageUrl: true,
+          pageTitle: true,
+          referrer: true,
+          country: true,
+          region: true,
+          city: true,
+          asn: true,
+          networkName: true,
+          companyGuess: true,
+          companyConfidence: true,
+          utmSource: true,
+          utmMedium: true,
+          utmCampaign: true,
+        },
+      }),
+      shouldPaginate ? options.prisma.visitorEvent.count() : Promise.resolve(0),
+    ]);
 
-    return rows.map((row) => ({
+    const mappedRows = rows.map((row) => ({
       id: row.id,
       occurred_at: row.occurredAt,
       event_name: row.eventName,
@@ -487,6 +585,12 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       utm_medium: row.utmMedium,
       utm_campaign: row.utmCampaign,
     }));
+
+    if (!shouldPaginate) {
+      return mappedRows;
+    }
+
+    return paginatedResponse(mappedRows, pagination.page, pagination.pageSize, total);
   });
 
   app.get('/api/v1/dashboard/ip-intelligence', {
@@ -494,40 +598,49 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       tags: ['Dashboard'],
       summary: 'Get recent IP intelligence records',
       security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
-      querystring: Type.Object({
-        limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
-      }),
+      querystring: Type.Intersect([
+        PaginationQuerySchema,
+        Type.Object({
+          limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
+        }),
+      ]),
     },
   }, async (request) => {
     const query = request.query as any;
     const limit = Number(query.limit || 100);
+    const pagination = parsePagination(query);
+    const shouldPaginate = hasPagination(query);
 
-    const rows = await options.prisma.ipIntelligence.findMany({
-      orderBy: {
-        updatedAt: 'desc',
-      },
-      take: limit,
-      select: {
-        id: true,
-        country: true,
-        countryCode: true,
-        region: true,
-        city: true,
-        asn: true,
-        asName: true,
-        asDomain: true,
-        reverseDns: true,
-        networkName: true,
-        companyGuess: true,
-        companyDomain: true,
-        companyConfidence: true,
-        companyReason: true,
-        lastLookupAt: true,
-        updatedAt: true,
-      },
-    });
+    const [rows, total] = await Promise.all([
+      options.prisma.ipIntelligence.findMany({
+        orderBy: {
+          updatedAt: 'desc',
+        },
+        skip: shouldPaginate ? pagination.skip : undefined,
+        take: shouldPaginate ? pagination.take : limit,
+        select: {
+          id: true,
+          country: true,
+          countryCode: true,
+          region: true,
+          city: true,
+          asn: true,
+          asName: true,
+          asDomain: true,
+          reverseDns: true,
+          networkName: true,
+          companyGuess: true,
+          companyDomain: true,
+          companyConfidence: true,
+          companyReason: true,
+          lastLookupAt: true,
+          updatedAt: true,
+        },
+      }),
+      shouldPaginate ? options.prisma.ipIntelligence.count() : Promise.resolve(0),
+    ]);
 
-    return rows.map((row) => ({
+    const mappedRows = rows.map((row) => ({
       id: row.id,
       country: row.country,
       country_code: row.countryCode,
@@ -545,5 +658,11 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       last_lookup_at: row.lastLookupAt,
       updated_at: row.updatedAt,
     }));
+
+    if (!shouldPaginate) {
+      return mappedRows;
+    }
+
+    return paginatedResponse(mappedRows, pagination.page, pagination.pageSize, total);
   });
 }
