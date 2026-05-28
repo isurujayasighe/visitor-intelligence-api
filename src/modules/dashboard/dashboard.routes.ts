@@ -106,6 +106,15 @@ function parseBoolean(value: unknown): boolean {
   return value === true || value === 'true' || value === '1';
 }
 
+function periodKey(date: Date, interval: 'day' | 'hour'): string {
+  const iso = date.toISOString();
+  return interval === 'hour' ? `${iso.slice(0, 13)}:00:00.000Z` : iso.slice(0, 10);
+}
+
+function isDateInPeriod(date: Date, period: string, interval: 'day' | 'hour'): boolean {
+  return periodKey(date, interval) === period;
+}
+
 async function loadPageGroupRules(prisma: PrismaClient): Promise<PageGroupRuleLike[]> {
   try {
     return await prisma.pageGroupRule.findMany({
@@ -1030,6 +1039,204 @@ export async function registerDashboardRoutes(app: FastifyInstance, options: Opt
       where: { isActive: true },
       orderBy: { priority: 'asc' },
     });
+  });
+
+  app.get('/api/v1/dashboard/user-analytics/summary', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get anonymous user analytics summary',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: Type.Intersect([
+        DateRangeQuerySchema,
+        Type.Object({
+          activeWindowMinutes: Type.Optional(Type.Number({ minimum: 1, maximum: 1440 })),
+        }),
+      ]),
+    },
+  }, async (request) => {
+    const query = request.query as any;
+    const { from, to } = parseDateRange(query);
+    const activeWindowMinutes = parsePositiveInt(query.activeWindowMinutes, 5, 1440);
+    const activeSince = new Date(Date.now() - activeWindowMinutes * 60 * 1000);
+    const eventWhere = {
+      occurredAt: {
+        gte: from,
+        lte: to,
+      },
+      visitorId: {
+        not: null,
+      },
+    };
+
+    const [activeUsers, newUsers, totalEvents, visitorGroups] = await Promise.all([
+      options.prisma.anonymousVisitor.count({
+        where: {
+          lastSeenAt: {
+            gte: activeSince,
+          },
+        },
+      }),
+      options.prisma.anonymousVisitor.count({
+        where: {
+          firstSeenAt: {
+            gte: from,
+            lte: to,
+          },
+        },
+      }),
+      options.prisma.visitorEvent.count({
+        where: {
+          occurredAt: {
+            gte: from,
+            lte: to,
+          },
+        },
+      }),
+      options.prisma.visitorEvent.groupBy({
+        by: ['visitorId'],
+        where: eventWhere,
+      }),
+    ]);
+
+    const visitorIds = visitorGroups.map((row) => row.visitorId).filter(Boolean) as string[];
+    const visitors = visitorIds.length
+      ? await options.prisma.anonymousVisitor.findMany({
+          where: {
+            id: {
+              in: visitorIds,
+            },
+          },
+          select: {
+            id: true,
+            firstSeenAt: true,
+          },
+        })
+      : [];
+    const returningUsers = visitors.filter((visitor) => visitor.firstSeenAt < from).length;
+    const totalUniqueUsers = visitorIds.length;
+
+    return {
+      active_users: activeUsers,
+      new_users: newUsers,
+      returning_users: returningUsers,
+      total_unique_users: totalUniqueUsers,
+      total_events: totalEvents,
+      average_events_per_user: totalUniqueUsers > 0 ? Number((totalEvents / totalUniqueUsers).toFixed(2)) : 0,
+      active_window_minutes: activeWindowMinutes,
+    };
+  });
+
+  app.get('/api/v1/dashboard/user-analytics/chart', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get anonymous user analytics trend chart',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: Type.Intersect([
+        DateRangeQuerySchema,
+        Type.Object({
+          interval: Type.Optional(Type.Union([Type.Literal('day'), Type.Literal('hour')])),
+        }),
+      ]),
+    },
+  }, async (request) => {
+    const query = request.query as any;
+    const { from, to } = parseDateRange(query);
+    const interval = query.interval === 'hour' ? 'hour' : 'day';
+    const events = await options.prisma.visitorEvent.findMany({
+      where: {
+        occurredAt: {
+          gte: from,
+          lte: to,
+        },
+        visitorId: {
+          not: null,
+        },
+      },
+      orderBy: {
+        occurredAt: 'asc',
+      },
+      select: {
+        occurredAt: true,
+        visitorId: true,
+        visitor: {
+          select: {
+            firstSeenAt: true,
+          },
+        },
+      },
+    });
+    const buckets = new Map<string, { period: string; users: Set<string>; newUsers: Set<string>; events: number }>();
+
+    events.forEach((event) => {
+      if (!event.visitorId) return;
+      const key = periodKey(event.occurredAt, interval);
+      const bucket = buckets.get(key) || { period: key, users: new Set<string>(), newUsers: new Set<string>(), events: 0 };
+      bucket.users.add(event.visitorId);
+      if (event.visitor?.firstSeenAt && isDateInPeriod(event.visitor.firstSeenAt, key, interval)) {
+        bucket.newUsers.add(event.visitorId);
+      }
+      bucket.events += 1;
+      buckets.set(key, bucket);
+    });
+
+    return Array.from(buckets.values()).map((bucket) => {
+      const uniqueUsers = bucket.users.size;
+      const newUsers = bucket.newUsers.size;
+      return {
+        period: bucket.period,
+        unique_users: uniqueUsers,
+        new_users: newUsers,
+        returning_users: Math.max(0, uniqueUsers - newUsers),
+        events: bucket.events,
+      };
+    });
+  });
+
+  app.get('/api/v1/dashboard/user-analytics/recent-active-users', {
+    schema: {
+      tags: ['Dashboard'],
+      summary: 'Get recent active anonymous users',
+      security: [{ bearerAuth: [] }, { apiKeyAuth: [] }],
+      querystring: Type.Object({
+        activeWindowMinutes: Type.Optional(Type.Number({ minimum: 1, maximum: 1440 })),
+        limit: Type.Optional(Type.Number({ minimum: 1, maximum: 200 })),
+      }),
+    },
+  }, async (request) => {
+    const query = request.query as any;
+    const activeWindowMinutes = parsePositiveInt(query.activeWindowMinutes, 5, 1440);
+    const limit = parsePositiveInt(query.limit, 50, 200);
+    const activeSince = new Date(Date.now() - activeWindowMinutes * 60 * 1000);
+    const rows = await options.prisma.anonymousVisitor.findMany({
+      where: {
+        lastSeenAt: {
+          gte: activeSince,
+        },
+      },
+      orderBy: {
+        lastSeenAt: 'desc',
+      },
+      take: limit,
+      select: {
+        id: true,
+        clientId: true,
+        lastSeenAt: true,
+        lastCountry: true,
+        lastPageUrl: true,
+        eventCount: true,
+        sessionCount: true,
+      },
+    });
+
+    return rows.map((row) => ({
+      visitor_id: row.id,
+      client_id: row.clientId,
+      last_seen_at: row.lastSeenAt,
+      country: row.lastCountry,
+      last_page_url: row.lastPageUrl,
+      event_count: row.eventCount,
+      session_count: row.sessionCount,
+    }));
   });
 
   app.get('/api/v1/dashboard/recent-visits', {

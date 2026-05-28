@@ -105,6 +105,8 @@ model VisitorEvent {
   ipIntelligence    IpIntelligence?   @relation(fields: [ipIntelligenceId], references: [id], onDelete: SetNull)
   visitSessionId    String?
   visitSession      VisitSession?     @relation(fields: [visitSessionId], references: [id], onDelete: SetNull)
+  visitorId          String?
+  visitor            AnonymousVisitor? @relation(fields: [visitorId], references: [id], onDelete: SetNull)
 
   rawPayload         Json?
 
@@ -122,7 +124,46 @@ model VisitorEvent {
   @@index([normalizedPageHostname])
   @@index([occurredAt, pageGroup])
   @@index([visitSessionId])
+  @@index([visitorId])
   @@index([utmSource])
+}
+
+model AnonymousVisitor {
+  id                 String         @id @default(cuid())
+
+  visitorKey         String         @unique
+  clientId           String?
+  ipHash             String?
+  userAgentHash      String?
+
+  firstSeenAt        DateTime
+  lastSeenAt         DateTime
+
+  firstCountry       String?
+  firstCountryCode   String?
+  lastCountry        String?
+  lastCountryCode    String?
+
+  firstPageUrl       String?
+  lastPageUrl        String?
+
+  firstUtmSource     String?
+  firstUtmMedium     String?
+  firstUtmCampaign   String?
+
+  eventCount         Int            @default(0)
+  sessionCount       Int            @default(0)
+
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  events             VisitorEvent[]
+
+  @@index([firstSeenAt])
+  @@index([lastSeenAt])
+  @@index([clientId])
+  @@index([firstCountryCode])
+  @@index([lastCountryCode])
 }
 
 model VisitSession {

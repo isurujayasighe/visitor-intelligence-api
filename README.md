@@ -170,6 +170,9 @@ POST /api/v1/dashboard/company-ip-mappings
 PATCH /api/v1/dashboard/company-ip-mappings/:id
 DELETE /api/v1/dashboard/company-ip-mappings/:id
 GET /api/v1/dashboard/network-classifier-rules
+GET /api/v1/dashboard/user-analytics/summary
+GET /api/v1/dashboard/user-analytics/chart
+GET /api/v1/dashboard/user-analytics/recent-active-users
 ```
 
 List endpoints support pagination with `page` and `pageSize`. The frontend defaults to `pageSize=20`.
@@ -221,6 +224,40 @@ Advisory services
 Products
 Other pages
 ```
+
+## User analytics
+
+User analytics tracks anonymous website visitors, not logged-in people.
+
+Visitor identity priority:
+
+```text
+1. client_id
+2. sha256(ipHash + userAgent)
+3. ipHash
+```
+
+Every new ingested event creates or updates one `AnonymousVisitor` and links `VisitorEvent.visitorId`.
+
+Dashboard endpoints:
+
+```text
+GET /api/v1/dashboard/user-analytics/summary?from=2026-05-01&to=2026-05-28&activeWindowMinutes=5
+GET /api/v1/dashboard/user-analytics/chart?from=2026-05-01&to=2026-05-28&interval=day
+GET /api/v1/dashboard/user-analytics/chart?from=2026-05-28&to=2026-05-28&interval=hour
+GET /api/v1/dashboard/user-analytics/recent-active-users?activeWindowMinutes=5&limit=50
+```
+
+Definitions:
+
+```text
+Active users: anonymous visitors with lastSeenAt inside the active window
+New users: anonymous visitors whose firstSeenAt is inside the report period
+Returning users: anonymous visitors active in the report period with firstSeenAt before the period
+Total unique users: unique anonymous visitors with events in the report period
+```
+
+If `client_id` is missing, user counts are estimated from IP hash and user-agent hash. Raw IP is not used as the public visitor identifier.
 
 To backfill sessions from existing page-level `VisitorEvent` records:
 

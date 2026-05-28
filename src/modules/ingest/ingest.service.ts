@@ -5,6 +5,7 @@ import { extractPublicIp } from '../ip-intelligence/ip-normalizer';
 import type { IpIntelligenceService } from '../ip-intelligence/ip-intelligence.service';
 import { normalizePageData, type PageGroupRuleLike } from '../page-intelligence/page-normalizer.service';
 import { normalizeAndGroupUrl, type GroupedUrl, type UrlGroupRuleLike } from '../url-grouping/url-normalizer.service';
+import { VisitorIdentityService } from '../user-analytics/visitor-identity.service';
 import type { IngestVisitorEventBody } from './ingest.schema';
 
 type Dependencies = {
@@ -100,6 +101,19 @@ export class IngestService {
       occurredAt,
       groupedUrl,
     });
+    const visitor = await new VisitorIdentityService(this.deps.prisma).upsertAnonymousVisitor({
+      clientId,
+      ipHash,
+      userAgent: valueOrNull(body.user_agent),
+      occurredAt,
+      country: intelligence.country,
+      countryCode: intelligence.countryCode,
+      pageUrl: valueOrNull(body.page_url) || normalizedPage.normalizedPageUrl || valueOrNull(body.referrer),
+      utmSource: valueOrNull(body.utm_source),
+      utmMedium: valueOrNull(body.utm_medium),
+      utmCampaign: valueOrNull(body.utm_campaign),
+      visitSessionId: session.id,
+    });
 
     const event = await this.deps.prisma.visitorEvent.create({
       data: {
@@ -139,6 +153,7 @@ export class IngestService {
 
         ipIntelligenceId: intelligence.id,
         visitSessionId: session.id,
+        visitorId: visitor.id,
         rawPayload: body,
       },
     });
@@ -148,6 +163,7 @@ export class IngestService {
       intelligence,
       ip,
       session,
+      visitor,
     };
   }
 
